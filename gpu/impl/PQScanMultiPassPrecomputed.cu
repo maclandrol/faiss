@@ -219,6 +219,7 @@ runMultiPassTile(Tensor<float, 2, true>& queries,
                  NoTypeTensor<3, true>& precompTerm2,
                  NoTypeTensor<3, true>& precompTerm3,
                  Tensor<int, 2, true>& topQueryToCentroid,
+                 Tensor<uint8_t, 1, true>& bitset,
                  bool useFloat16Lookup,
                  int bytesPerCode,
                  int numSubQuantizers,
@@ -251,7 +252,12 @@ runMultiPassTile(Tensor<float, 2, true>& queries,
     auto block = dim3(kThreadsPerBlock);
 
     // pq precomputed terms (2 + 3)
-    auto smem = useFloat16Lookup ? sizeof(half) : sizeof(float);
+    auto smem = sizeof(float);
+#ifdef FAISS_USE_FLOAT16
+    if (useFloat16Lookup) {
+      smem = sizeof(half);
+    }
+#endif
 
     smem *= numSubQuantizers * numSubQuantizerCodes;
     FAISS_ASSERT(smem <= getMaxSharedMemPerBlockCurrentDevice());
@@ -274,6 +280,7 @@ runMultiPassTile(Tensor<float, 2, true>& queries,
           allDistances);                                                \
     } while (0)
 
+#ifdef  FAISS_USE_FLOAT16
 #define RUN_PQ(NUM_SUB_Q)                       \
     do {                                        \
       if (useFloat16Lookup) {                   \
@@ -282,6 +289,12 @@ runMultiPassTile(Tensor<float, 2, true>& queries,
         RUN_PQ_OPT(NUM_SUB_Q, float, float4);   \
       }                                         \
     } while (0)
+#else
+#define RUN_PQ(NUM_SUB_Q)                       \
+    do {                                        \
+      RUN_PQ_OPT(NUM_SUB_Q, float, float4);     \
+    } while (0)
+#endif
 
     switch (bytesPerCode) {
       case 1:
@@ -344,7 +357,11 @@ runMultiPassTile(Tensor<float, 2, true>& queries,
   }
 
   // k-select the output in chunks, to increase parallelism
-  runPass1SelectLists(prefixSumOffsets,
+  runPass1SelectLists(listIndices,
+                      indicesOptions,
+                      prefixSumOffsets,
+                      topQueryToCentroid,
+                      bitset,
                       allDistances,
                       topQueryToCentroid.getSize(1),
                       k,
@@ -377,6 +394,7 @@ void runPQScanMultiPassPrecomputed(Tensor<float, 2, true>& queries,
                                    NoTypeTensor<3, true>& precompTerm2,
                                    NoTypeTensor<3, true>& precompTerm3,
                                    Tensor<int, 2, true>& topQueryToCentroid,
+                                   Tensor<uint8_t, 1, true>& bitset,
                                    bool useFloat16Lookup,
                                    int bytesPerCode,
                                    int numSubQuantizers,
@@ -527,6 +545,7 @@ void runPQScanMultiPassPrecomputed(Tensor<float, 2, true>& queries,
                      precompTerm2,
                      term3View,
                      coarseIndicesView,
+                     bitset,
                      useFloat16Lookup,
                      bytesPerCode,
                      numSubQuantizers,

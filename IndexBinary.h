@@ -93,22 +93,55 @@ struct IndexBinary {
    * @param x           input vectors to search, size n * d / 8
    * @param labels      output labels of the NNs, size n*k
    * @param distances   output pairwise distances, size n*k
+   * @param bitset      flags to check the validity of vectors
    */
   virtual void search(idx_t n, const uint8_t *x, idx_t k,
-                      int32_t *distances, idx_t *labels) const = 0;
+                      int32_t *distances, idx_t *labels,
+                      const BitsetView bitset = nullptr) const = 0;
+
+#if 0
+  /** Query n raw vectors from the index by ids.
+   *
+   * return n raw vectors.
+   *
+   * @param n           input num of xid
+   * @param xid         input labels of the NNs, size n
+   * @param x           output raw vectors, size n * d
+   * @param bitset      flags to check the validity of vectors
+   */
+  virtual void get_vector_by_id (idx_t n, const idx_t *xid, uint8_t *x, const BitsetView bitset = nullptr);
+
+  /** query n vectors of dimension d to the index by ids.
+   *
+   * return at most k vectors. If there are not enough results for a
+   * query, the result array is padded with -1s.
+   *
+   * @param xid         input ids to search, size n
+   * @param labels      output labels of the NNs, size n*k
+   * @param distances   output pairwise distances, size n*k
+   * @param bitset      flags to check the validity of vectors
+   */
+  virtual void search_by_id (idx_t n, const idx_t *xid, idx_t k, int32_t *distances, idx_t *labels,
+                             const BitsetView bitset = nullptr);
+#endif
 
   /** Query n vectors of dimension d to the index.
    *
-   * return all vectors with distance < radius. Note that many
-   * indexes do not implement the range_search (only the k-NN search
-   * is mandatory).
+   * return all vectors with distance < radius. Note that many indexes
+   * do not implement the range_search (only the k-NN search is
+   * mandatory). The distances are converted to float to reuse the
+   * RangeSearchResult structure, but they are integer. By convention,
+   * only distances < radius (strict comparison) are returned,
+   * ie. radius = 0 does not return any result and 1 returns only
+   * exact same vectors.
    *
    * @param x           input vectors to search, size n * d / 8
    * @param radius      search radius
    * @param result      result table
    */
   virtual void range_search(idx_t n, const uint8_t *x, int radius,
-                            RangeSearchResult *result) const;
+                            RangeSearchResult *result,
+                            const BitsetView bitset = nullptr) const;
 
   /** Return the indexes of the k vectors closest to the query x.
    *

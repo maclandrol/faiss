@@ -15,7 +15,7 @@
 
 #include <faiss/IndexIVF.h>
 #include <faiss/impl/ScalarQuantizer.h>
-
+#include <faiss/impl/ScalarQuantizerOp.h>
 
 namespace faiss {
 
@@ -44,7 +44,7 @@ struct IndexScalarQuantizer: Index {
      * @param nbits  number of bit per subvector index
      */
     IndexScalarQuantizer (int d,
-                          ScalarQuantizer::QuantizerType qtype,
+                          QuantizerType qtype,
                           MetricType metric = METRIC_L2);
 
     IndexScalarQuantizer ();
@@ -58,7 +58,8 @@ struct IndexScalarQuantizer: Index {
         const float* x,
         idx_t k,
         float* distances,
-        idx_t* labels) const override;
+        idx_t* labels,
+        const BitsetView bitset = nullptr) const override;
 
     void reset() override;
 
@@ -77,6 +78,7 @@ struct IndexScalarQuantizer: Index {
     void sa_decode (idx_t n, const uint8_t *bytes,
                             float *x) const override;
 
+    size_t cal_size() { return codes.size() * sizeof(uint8_t) + sizeof(size_t) + sq.cal_size(); }
 
 };
 
@@ -92,7 +94,7 @@ struct IndexIVFScalarQuantizer: IndexIVF {
     bool by_residual;
 
     IndexIVFScalarQuantizer(Index *quantizer, size_t d, size_t nlist,
-                            ScalarQuantizer::QuantizerType qtype,
+                            QuantizerType qtype,
                             MetricType metric = METRIC_L2,
                             bool encode_residual = true);
 
@@ -106,6 +108,8 @@ struct IndexIVFScalarQuantizer: IndexIVF {
                         bool include_listnos=false) const override;
 
     void add_with_ids(idx_t n, const float* x, const idx_t* xids) override;
+    
+    void add_with_ids_without_codes(idx_t n, const float* x, const idx_t* xids) override;
 
     InvertedListScanner *get_InvertedListScanner (bool store_pairs)
         const override;

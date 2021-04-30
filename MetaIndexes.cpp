@@ -22,7 +22,6 @@ namespace faiss {
 
 namespace {
 
-typedef Index::idx_t idx_t;
 
 } // namespace
 
@@ -83,9 +82,10 @@ void IndexIDMapTemplate<IndexT>::add_with_ids
 template <typename IndexT>
 void IndexIDMapTemplate<IndexT>::search
     (idx_t n, const typename IndexT::component_t *x, idx_t k,
-     typename IndexT::distance_t *distances, typename IndexT::idx_t *labels) const
+     typename IndexT::distance_t *distances, typename IndexT::idx_t *labels,
+     const BitsetView bitset) const
 {
-    index->search (n, x, k, distances, labels);
+    index->search (n, x, k, distances, labels, bitset);
     idx_t *li = labels;
 #pragma omp parallel for
     for (idx_t i = 0; i < n * k; i++) {
@@ -93,13 +93,40 @@ void IndexIDMapTemplate<IndexT>::search
     }
 }
 
+#if 0
+template <typename IndexT>
+void IndexIDMapTemplate<IndexT>::get_vector_by_id(idx_t n, const idx_t *xid, component_t *x,
+                                                  const BitsetView bitset)
+{
+    /* only get vector by 1 id */
+    FAISS_ASSERT(n == 1);
+    if (!bitset || !bitset.test(xid[0])) {
+        index->reconstruct(xid[0], x + 0 * IndexT::d);
+    } else {
+        memset(x, UINT8_MAX, IndexT::d * sizeof(component_t));
+    }
+}
+
+template <typename IndexT>
+void IndexIDMapTemplate<IndexT>::search_by_id (idx_t n, const idx_t *xid, idx_t k,
+        typename IndexT::distance_t *distances, idx_t *labels, const BitsetView bitset)
+{
+    auto x = new typename IndexT::component_t[n * IndexT::d];
+    for (idx_t i = 0; i < n; i++) {
+        index->reconstruct(xid[i], x + i * IndexT::d);
+    }
+    index->search(n, x, k, distances, labels, bitset);
+    delete []x;
+}
+#endif
 
 template <typename IndexT>
 void IndexIDMapTemplate<IndexT>::range_search
     (typename IndexT::idx_t n, const typename IndexT::component_t *x,
-     typename IndexT::distance_t radius, RangeSearchResult *result) const
+     typename IndexT::distance_t radius, RangeSearchResult *result,
+     const BitsetView bitset) const
 {
-  index->range_search(n, x, radius, result);
+  index->range_search(n, x, radius, result, bitset);
 #pragma omp parallel for
   for (idx_t i = 0; i < result->lims[result->nq]; i++) {
       result->labels[i] = result->labels[i] < 0 ?
@@ -256,7 +283,8 @@ void IndexSplitVectors::add(idx_t /*n*/, const float* /*x*/) {
 
 void IndexSplitVectors::search (
            idx_t n, const float *x, idx_t k,
-           float *distances, idx_t *labels) const
+           float *distances, idx_t *labels,
+           const BitsetView bitset) const
 {
     FAISS_THROW_IF_NOT_MSG (k == 1,
                       "search implemented only for k=1");

@@ -63,8 +63,7 @@ void pq_estimators_from_tables_Mmul4 (int M, const CT * codes,
         }
 
         if (C::cmp (heap_dis[0], dis)) {
-            heap_pop<C> (k, heap_dis, heap_ids);
-            heap_push<C> (k, heap_dis, heap_ids, dis, j);
+            heap_swap_top<C> (k, heap_dis, heap_ids, dis, j);
         }
     }
 }
@@ -89,8 +88,7 @@ void pq_estimators_from_tables_M4 (const CT * codes,
         dis += dt[*codes++];
 
         if (C::cmp (heap_dis[0], dis)) {
-            heap_pop<C> (k, heap_dis, heap_ids);
-            heap_push<C> (k, heap_dis, heap_ids, dis, j);
+            heap_swap_top<C> (k, heap_dis, heap_ids, dis, j);
         }
     }
 }
@@ -132,8 +130,7 @@ static inline void pq_estimators_from_tables (const ProductQuantizer& pq,
             dt += ksub;
         }
         if (C::cmp (heap_dis[0], dis)) {
-            heap_pop<C> (k, heap_dis, heap_ids);
-            heap_push<C> (k, heap_dis, heap_ids, dis, j);
+            heap_swap_top<C> (k, heap_dis, heap_ids, dis, j);
         }
     }
 }
@@ -151,7 +148,7 @@ static inline void pq_estimators_from_tables_generic(const ProductQuantizer& pq,
   const size_t M = pq.M;
   const size_t ksub = pq.ksub;
   for (size_t j = 0; j < ncodes; ++j) {
-    faiss::ProductQuantizer::PQDecoderGeneric decoder(
+    PQDecoderGeneric decoder(
       codes + j * pq.code_size, nbits
     );
     float dis = 0;
@@ -163,8 +160,7 @@ static inline void pq_estimators_from_tables_generic(const ProductQuantizer& pq,
     }
 
     if (C::cmp(heap_dis[0], dis)) {
-      heap_pop<C>(k, heap_dis, heap_ids);
-      heap_push<C>(k, heap_dis, heap_ids, dis, j);
+      heap_swap_top<C>(k, heap_dis, heap_ids, dis, j);
     }
   }
 }
@@ -747,8 +743,7 @@ void ProductQuantizer::search_sdc (const uint8_t * qcodes,
                 tab += ksub * ksub;
             }
             if (dis < heap_dis[0]) {
-                maxheap_pop (k, heap_dis, heap_ids);
-                maxheap_push (k, heap_dis, heap_ids, dis, j);
+                maxheap_swap_top (k, heap_dis, heap_ids, dis, j);
             }
             bcode += code_size;
         }
@@ -759,118 +754,6 @@ void ProductQuantizer::search_sdc (const uint8_t * qcodes,
 
 }
 
-
-ProductQuantizer::PQEncoderGeneric::PQEncoderGeneric(uint8_t *code, int nbits,
-                                                     uint8_t offset)
-    : code(code), offset(offset), nbits(nbits), reg(0) {
-  assert(nbits <= 64);
-  if (offset > 0) {
-    reg = (*code & ((1 << offset) - 1));
-  }
-}
-
-void ProductQuantizer::PQEncoderGeneric::encode(uint64_t x) {
-  reg |= (uint8_t)(x << offset);
-  x >>= (8 - offset);
-  if (offset + nbits >= 8) {
-    *code++ = reg;
-
-    for (int i = 0; i < (nbits - (8 - offset)) / 8; ++i) {
-      *code++ = (uint8_t)x;
-      x >>= 8;
-    }
-
-    offset += nbits;
-    offset &= 7;
-    reg = (uint8_t)x;
-  } else {
-    offset += nbits;
-  }
-}
-
-ProductQuantizer::PQEncoderGeneric::~PQEncoderGeneric() {
-  if (offset > 0) {
-    *code = reg;
-  }
-}
-
-
-ProductQuantizer::PQEncoder8::PQEncoder8(uint8_t *code, int nbits)
-    : code(code) {
-  assert(8 == nbits);
-}
-
-void ProductQuantizer::PQEncoder8::encode(uint64_t x) {
-  *code++ = (uint8_t)x;
-}
-
-
-ProductQuantizer::PQEncoder16::PQEncoder16(uint8_t *code, int nbits)
-    : code((uint16_t *)code) {
-  assert(16 == nbits);
-}
-
-void ProductQuantizer::PQEncoder16::encode(uint64_t x) {
-  *code++ = (uint16_t)x;
-}
-
-
-ProductQuantizer::PQDecoderGeneric::PQDecoderGeneric(const uint8_t *code,
-                                                     int nbits)
-    : code(code),
-      offset(0),
-      nbits(nbits),
-      mask((1ull << nbits) - 1),
-      reg(0) {
-  assert(nbits <= 64);
-}
-
-uint64_t ProductQuantizer::PQDecoderGeneric::decode() {
-  if (offset == 0) {
-    reg = *code;
-  }
-  uint64_t c = (reg >> offset);
-
-  if (offset + nbits >= 8) {
-    uint64_t e = 8 - offset;
-    ++code;
-    for (int i = 0; i < (nbits - (8 - offset)) / 8; ++i) {
-      c |= ((uint64_t)(*code++) << e);
-      e += 8;
-    }
-
-    offset += nbits;
-    offset &= 7;
-    if (offset > 0) {
-      reg = *code;
-      c |= ((uint64_t)reg << e);
-    }
-  } else {
-    offset += nbits;
-  }
-
-  return c & mask;
-}
-
-
-ProductQuantizer::PQDecoder8::PQDecoder8(const uint8_t *code, int nbits)
-    : code(code) {
-  assert(8 == nbits);
-}
-
-uint64_t ProductQuantizer::PQDecoder8::decode() {
-  return (uint64_t)(*code++);
-}
-
-
-ProductQuantizer::PQDecoder16::PQDecoder16(const uint8_t *code, int nbits)
-    : code((uint16_t *)code) {
-  assert(16 == nbits);
-}
-
-uint64_t ProductQuantizer::PQDecoder16::decode() {
-  return (uint64_t)(*code++);
-}
 
 
 }  // namespace faiss

@@ -13,12 +13,14 @@
 #include <vector>
 
 #include <faiss/Index.h>
+#include <faiss/impl/AuxIndexStructures.h>
 
 
 namespace faiss {
 
 /** Index that stores the full vectors and performs exhaustive search */
 struct IndexFlat: Index {
+
     /// database vectors, size ntotal * d
     std::vector<float> xb;
 
@@ -33,13 +35,29 @@ struct IndexFlat: Index {
         const float* x,
         idx_t k,
         float* distances,
-        idx_t* labels) const override;
+        idx_t* labels,
+        const BitsetView bitset = nullptr) const override;
+
+    void assign (
+        idx_t n,
+        const float * x,
+        idx_t * labels,
+        float* distances = nullptr) override;
 
     void range_search(
         idx_t n,
         const float* x,
         float radius,
-        RangeSearchResult* result) const override;
+        RangeSearchResult* result,
+        const BitsetView bitset = nullptr) const override;
+
+    void range_search(
+        idx_t n,
+        const float* x,
+        float radius,
+        std::vector<faiss::RangeSearchPartialResult*> &result,
+        size_t buffer_size,
+        const BitsetView bitset = nullptr); // const override
 
     void reconstruct(idx_t key, float* recons) const override;
 
@@ -76,6 +94,8 @@ struct IndexFlat: Index {
     void sa_decode (idx_t n, const uint8_t *bytes,
                             float *x) const override;
 
+    size_t cal_size() { return xb.size() * sizeof(float); }
+
 };
 
 
@@ -103,7 +123,8 @@ struct IndexFlatL2BaseShift: IndexFlatL2 {
         const float* x,
         idx_t k,
         float* distances,
-        idx_t* labels) const override;
+        idx_t* labels,
+        const BitsetView bitset = nullptr) const override;
 };
 
 
@@ -138,13 +159,14 @@ struct IndexRefineFlat: Index {
         const float* x,
         idx_t k,
         float* distances,
-        idx_t* labels) const override;
+        idx_t* labels,
+        const BitsetView bitset = nullptr) const override;
 
     ~IndexRefineFlat() override;
 };
 
 
-/// optimized version for 1D "vectors"
+/// optimized version for 1D "vectors".
 struct IndexFlat1D:IndexFlatL2 {
     bool continuous_update; ///< is the permutation updated continuously?
 
@@ -166,7 +188,8 @@ struct IndexFlat1D:IndexFlatL2 {
         const float* x,
         idx_t k,
         float* distances,
-        idx_t* labels) const override;
+        idx_t* labels,
+        const BitsetView bitset = nullptr) const override;
 };
 
 

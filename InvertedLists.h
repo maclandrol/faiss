@@ -15,9 +15,35 @@
  * the interface.
  */
 
+#include <memory>
 #include <vector>
 #include <faiss/Index.h>
 
+#ifndef USE_CPU
+namespace faiss {
+
+struct PageLockMemory {
+public:
+    PageLockMemory() : data(nullptr), nbytes(0) {}
+
+    PageLockMemory(size_t size);
+
+    ~PageLockMemory();
+
+    PageLockMemory(const PageLockMemory& other);
+
+    PageLockMemory(PageLockMemory &&other);
+
+    inline size_t size() {
+        return nbytes;
+    }
+
+    void *data;
+    size_t nbytes;
+};
+using PageLockMemoryPtr = std::shared_ptr<PageLockMemory>;
+}
+#endif
 
 namespace faiss {
 
@@ -85,6 +111,12 @@ struct InvertedLists {
            size_t list_no, size_t n_entry,
            const idx_t* ids, const uint8_t *code) = 0;
 
+    /// add one entry to an inverted list without codes
+    virtual size_t add_entry_without_codes (size_t list_no, idx_t theid);
+
+    virtual size_t add_entries_without_codes ( size_t list_no, size_t n_entry,
+                                               const idx_t* ids);
+
     virtual void update_entry (size_t list_no, size_t offset,
                                idx_t id, const uint8_t *code);
 
@@ -94,6 +126,12 @@ struct InvertedLists {
     virtual void resize (size_t list_no, size_t new_size) = 0;
 
     virtual void reset ();
+
+    virtual InvertedLists* to_readonly();
+
+    virtual InvertedLists* to_readonly_without_codes();
+
+    virtual bool is_readonly() const;
 
     /// move all entries from oivf (empty on output)
     void merge_from (InvertedLists *oivf, size_t add_id);
@@ -167,6 +205,11 @@ struct InvertedLists {
             list_no (list_no)
         {}
 
+        // For codes outside
+        ScopedCodes (const InvertedLists *il, size_t list_no, const uint8_t *original_codes):
+            il (il), codes (original_codes), list_no (list_no)
+        {}
+
         const uint8_t *get() {return codes; }
 
         ~ScopedCodes () {
@@ -193,12 +236,68 @@ struct ArrayInvertedLists: InvertedLists {
            size_t list_no, size_t n_entry,
            const idx_t* ids, const uint8_t *code) override;
 
+    size_t add_entries_without_codes ( 
+           size_t list_no, size_t n_entry,
+           const idx_t* ids) override;
+
     void update_entries (size_t list_no, size_t offset, size_t n_entry,
                          const idx_t *ids, const uint8_t *code) override;
 
     void resize (size_t list_no, size_t new_size) override;
 
+    InvertedLists* to_readonly() override;
+
+    InvertedLists* to_readonly_without_codes() override;
+
     virtual ~ArrayInvertedLists ();
+};
+
+struct ReadOnlyArrayInvertedLists: InvertedLists {
+#ifdef USE_CPU
+    std::vector <uint8_t> readonly_codes;
+    std::vector <idx_t> readonly_ids;
+#else
+    PageLockMemoryPtr pin_readonly_codes;
+    PageLockMemoryPtr pin_readonly_ids;
+#endif
+
+    std::vector <size_t> readonly_length;
+    std::vector <size_t> readonly_offset;
+    bool valid;
+
+    ReadOnlyArrayInvertedLists(size_t nlist, size_t code_size, const std::vector<size_t>& list_length);
+    explicit ReadOnlyArrayInvertedLists(const ArrayInvertedLists& other);
+    explicit ReadOnlyArrayInvertedLists(const ArrayInvertedLists& other, bool offset);
+
+    // Use default copy construct, just copy pointer, DON'T COPY pin_readonly_codes AND pin_readonly_ids
+//    explicit ReadOnlyArrayInvertedLists(const ReadOnlyArrayInvertedLists &);
+//    explicit ReadOnlyArrayInvertedLists(ReadOnlyArrayInvertedLists &&);
+    virtual ~ReadOnlyArrayInvertedLists();
+
+    size_t list_size(size_t list_no) const override;
+    const uint8_t * get_codes (size_t list_no) const override;
+    const idx_t * get_ids (size_t list_no) const override;
+
+    const uint8_t * get_all_codes() const;
+    const idx_t * get_all_ids() const;
+    const std::vector<size_t>& get_list_length() const;
+
+    size_t add_entries (
+            size_t list_no, size_t n_entry,
+            const idx_t* ids, const uint8_t *code) override;
+
+    size_t add_entries_without_codes ( 
+            size_t list_no, size_t n_entry,
+            const idx_t* ids) override;
+
+    void update_entries (size_t list_no, size_t offset, size_t n_entry,
+                         const idx_t *ids, const uint8_t *code) override;
+
+    void resize (size_t list_no, size_t new_size) override;
+
+    bool is_readonly() const override;
+
+    bool is_valid();
 };
 
 /*****************************************************************
@@ -216,6 +315,10 @@ struct ReadOnlyInvertedLists: InvertedLists {
     size_t add_entries (
            size_t list_no, size_t n_entry,
            const idx_t* ids, const uint8_t *code) override;
+
+    size_t add_entries_without_codes ( 
+           size_t list_no, size_t n_entry,
+           const idx_t* ids) override;
 
     void update_entries (size_t list_no, size_t offset, size_t n_entry,
                          const idx_t *ids, const uint8_t *code) override;

@@ -17,6 +17,7 @@
 #define FAISS_utils_h
 
 #include <stdint.h>
+#include <string>
 
 #include <faiss/utils/Heap.h>
 
@@ -64,21 +65,6 @@ int fvec_madd_and_argmin (size_t n, const float *a,
 /* perform a reflection (not an efficient implementation, just for test ) */
 void reflection (const float * u, float * x, size_t n, size_t d, size_t nu);
 
-
-/** For k-means: update stage.
- *
- * @param x          training vectors, size n * d
- * @param centroids  centroid vectors, size k * d
- * @param assign     nearest centroid for each training vector, size n
- * @param k_frozen   do not update the k_frozen first centroids
- * @return           nb of spliting operations to fight empty clusters
- */
-int km_update_centroids (
-        const float * x,
-        float * centroids,
-        int64_t * assign,
-        size_t d, size_t k, size_t n,
-        size_t k_frozen);
 
 /** compute the Q of the QR decomposition for m > n
  * @param a   size n * m: input matrix and output Q
@@ -174,6 +160,21 @@ uint64_t hash_bytes (const uint8_t *bytes, int64_t n);
 
 /** Whether OpenMP annotations were respected. */
 bool check_openmp();
+
+/** get the size of L3 cache  */
+int64_t get_L3_Size();
+
+extern void (*LOG_TRACE_)(const std::string&);
+
+extern void (*LOG_DEBUG_)(const std::string&);
+
+extern void (*LOG_INFO_)(const std::string&);
+
+extern void (*LOG_WARNING_)(const std::string&);
+
+extern void (*LOG_FATAL_)(const std::string&);
+
+extern void (*LOG_ERROR_)(const std::string&);
 
 } // namspace faiss
 

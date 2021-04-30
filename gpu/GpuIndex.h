@@ -10,6 +10,7 @@
 
 #include <faiss/Index.h>
 #include <faiss/gpu/utils/MemorySpace.h>
+#include <faiss/utils/ConcurrentBitset.h>
 
 namespace faiss { namespace gpu {
 
@@ -35,6 +36,7 @@ class GpuIndex : public faiss::Index {
   GpuIndex(GpuResources* resources,
            int dims,
            faiss::MetricType metric,
+           float metricArg,
            GpuIndexConfig config);
 
   inline int getDevice() const {
@@ -70,7 +72,8 @@ class GpuIndex : public faiss::Index {
               const float* x,
               Index::idx_t k,
               float* distances,
-              Index::idx_t* labels) const override;
+              Index::idx_t* labels,
+              const BitsetView bitset = nullptr) const override;
 
   /// Overridden to force GPU indices to provide their own GPU-friendly
   /// implementation
@@ -86,6 +89,12 @@ class GpuIndex : public faiss::Index {
                           const Index::idx_t* keys) const override;
 
  protected:
+  /// Copy what we need from the CPU equivalent
+  void copyFrom(const faiss::Index* index);
+
+  /// Copy what we have to the CPU equivalent
+  void copyTo(faiss::Index* index) const;
+
   /// Does addImpl_ require IDs? If so, and no IDs are provided, we will
   /// generate them sequentially based on the order in which the IDs are added
   virtual bool addImplRequiresIDs_() const = 0;
@@ -102,7 +111,8 @@ class GpuIndex : public faiss::Index {
                            const float* x,
                            int k,
                            float* distances,
-                           Index::idx_t* labels) const = 0;
+                           Index::idx_t* labels,
+                           const BitsetView bitset = nullptr) const = 0;
 
 private:
   /// Handles paged adds if the add set is too large, passes to
@@ -121,7 +131,8 @@ private:
                        const float* x,
                        int k,
                        float* outDistancesData,
-                       Index::idx_t* outIndicesData) const;
+                       Index::idx_t* outIndicesData,
+                       const BitsetView bitset = nullptr) const;
 
   /// Calls searchImpl_ for a single page of GPU-resident data,
   /// handling paging of the data and copies from the CPU
@@ -129,7 +140,8 @@ private:
                            const float* x,
                            int k,
                            float* outDistancesData,
-                           Index::idx_t* outIndicesData) const;
+                           Index::idx_t* outIndicesData,
+                           const BitsetView bitset = nullptr) const;
 
  protected:
   /// Manages streams, cuBLAS handles and scratch memory for devices

@@ -37,7 +37,7 @@ class GpuIndexIVFScalarQuantizer : public GpuIndexIVF {
     GpuResources* resources,
     int dims,
     int nlist,
-    faiss::ScalarQuantizer::QuantizerType qtype,
+    faiss::QuantizerType qtype,
     faiss::MetricType metric = MetricType::METRIC_L2,
     bool encodeResidual = true,
     GpuIndexIVFScalarQuantizerConfig config =
@@ -52,9 +52,13 @@ class GpuIndexIVFScalarQuantizer : public GpuIndexIVF {
   /// all data in ourselves
   void copyFrom(const faiss::IndexIVFScalarQuantizer* index);
 
+  void copyFromWithoutCodes(const faiss::IndexIVFScalarQuantizer* index, const uint8_t* arranged_data);
+
   /// Copy ourselves to the given CPU index; will overwrite all data
   /// in the index instance
   void copyTo(faiss::IndexIVFScalarQuantizer* index) const;
+
+  void copyToWithoutCodes(faiss::IndexIVFScalarQuantizer* index) const;
 
   /// After adding vectors, one can call this to reclaim device memory
   /// to exactly the amount needed. Returns space reclaimed in bytes
@@ -75,7 +79,8 @@ class GpuIndexIVFScalarQuantizer : public GpuIndexIVF {
                    const float* x,
                    int k,
                    float* distances,
-                   Index::idx_t* labels) const override;
+                   Index::idx_t* labels,
+                   const BitsetView bitset = nullptr) const override;
 
   /// Called from train to handle SQ residual training
   void trainResiduals_(Index::idx_t n, const float* x);

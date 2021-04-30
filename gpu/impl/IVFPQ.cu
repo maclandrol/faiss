@@ -32,6 +32,8 @@
 namespace faiss { namespace gpu {
 
 IVFPQ::IVFPQ(GpuResources* resources,
+             faiss::MetricType metric,
+             float metricArg,
              FlatIndex* quantizer,
              int numSubQuantizers,
              int bitsPerSubQuantizer,
@@ -40,6 +42,8 @@ IVFPQ::IVFPQ(GpuResources* resources,
              bool useFloat16LookupTables,
              MemorySpace space) :
     IVFBase(resources,
+            metric,
+            metricArg,
             quantizer,
             numSubQuantizers,
             indicesOptions,
@@ -55,6 +59,10 @@ IVFPQ::IVFPQ(GpuResources* resources,
   FAISS_ASSERT(bitsPerSubQuantizer_ <= 8);
   FAISS_ASSERT(dim_ % numSubQuantizers_ == 0);
   FAISS_ASSERT(isSupportedPQCodeLength(bytesPerVector_));
+
+#ifndef FAISS_USE_FLOAT16
+    FAISS_ASSERT(!useFloat16LookupTables_);
+#endif
 
   setPQCentroids_(pqCentroidData);
 }
@@ -95,6 +103,11 @@ IVFPQ::isSupportedNoPrecomputedSubDimSize(int dims) {
 
 void
 IVFPQ::setPrecomputedCodes(bool enable) {
+  if (enable && metric_ == MetricType::METRIC_INNER_PRODUCT) {
+    FAISS_THROW_MSG("Precomputed codes are not needed for GpuIndexIVFPQ "
+                    "with METRIC_INNER_PRODUCT");
+  }
+
   if (precomputedCodes_ != enable) {
     precomputedCodes_ = enable;
 
@@ -103,7 +116,9 @@ IVFPQ::setPrecomputedCodes(bool enable) {
     } else {
       // Clear out old precomputed code data
       precomputedCode_ = std::move(DeviceTensor<float, 3, true>());
+#ifdef FAISS_USE_FLOAT16
       precomputedCodeHalf_ = std::move(DeviceTensor<half, 3, true>());
+#endif
     }
   }
 }
@@ -114,8 +129,6 @@ IVFPQ::classifyAndAddVectors(Tensor<float, 2, true>& vecs,
   FAISS_ASSERT(vecs.getSize(0) == indices.getSize(0));
   FAISS_ASSERT(vecs.getSize(1) == dim_);
 
-  FAISS_ASSERT(!quantizer_->getUseFloat16());
-  auto& coarseCentroids = quantizer_->getVectorsFloat32Ref();
   auto& mem = resources_->getMemoryManagerCurrentDevice();
   auto stream = resources_->getDefaultStreamCurrentDevice();
 
@@ -128,7 +141,16 @@ IVFPQ::classifyAndAddVectors(Tensor<float, 2, true>& vecs,
   DeviceTensor<int, 2, true> listIds2d(mem, {vecs.getSize(0), 1}, stream);
   auto listIds = listIds2d.view<1>({vecs.getSize(0)});
 
-  quantizer_->query(vecs, 1, listDistance, listIds2d, false);
+  /* pseudo bitset */
+  DeviceTensor<uint8_t, 1, true> bitset(mem, {0}, stream);
+  quantizer_->query(vecs,
+                    bitset,
+                    1,
+                    metric_,
+                    metricArg_,
+                    listDistance,
+                    listIds2d,
+                    false);
 
   // Copy the lists that we wish to append to back to the CPU
   // FIXME: really this can be into pinned memory and a true async
@@ -140,7 +162,18 @@ IVFPQ::classifyAndAddVectors(Tensor<float, 2, true>& vecs,
   DeviceTensor<float, 2, true> residuals(
     mem, {vecs.getSize(0), vecs.getSize(1)}, stream);
 
-  runCalcResidual(vecs, coarseCentroids, listIds, residuals, stream);
+#ifdef FAISS_USE_FLOAT16
+  if (quantizer_->getUseFloat16()) {
+    auto& coarseCentroids = quantizer_->getVectorsFloat16Ref();
+    runCalcResidual(vecs, coarseCentroids, listIds, residuals, stream);
+  } else {
+    auto& coarseCentroids = quantizer_->getVectorsFloat32Ref();
+    runCalcResidual(vecs, coarseCentroids, listIds, residuals, stream);
+  }
+#else
+    auto& coarseCentroids = quantizer_->getVectorsFloat32Ref();
+    runCalcResidual(vecs, coarseCentroids, listIds, residuals, stream);
+#endif
 
   // Residuals are in the form
   // (vec x numSubQuantizer x dimPerSubQuantizer)
@@ -184,6 +217,7 @@ IVFPQ::classifyAndAddVectors(Tensor<float, 2, true>& vecs,
                   nullptr, // no precomputed norms
                   residualsTransposeView,
                   true, // residualsTransposeView is row major
+                  bitset,
                   1,
                   closestSubQDistanceView,
                   closestSubQIndexView,
@@ -422,8 +456,11 @@ IVFPQ::setPQCentroids_(float* data) {
   pqCentroidsMiddleCode_ = std::move(pqCentroidsMiddleCode);
 }
 
+template <typename CentroidT>
 void
-IVFPQ::precomputeCodes_() {
+IVFPQ::precomputeCodesT_() {
+  FAISS_ASSERT(metric_ == MetricType::METRIC_L2);
+
   //
   //    d = || x - y_C ||^2 + || y_R ||^2 + 2 * (y_C|y_R) - 2 * (x|y_R)
   //        ---------------   ---------------------------       -------
@@ -432,8 +469,6 @@ IVFPQ::precomputeCodes_() {
 
   // Terms 1 and 3 are available only at query time. We compute term 2
   // here.
-  FAISS_ASSERT(!quantizer_->getUseFloat16());
-  auto& coarseCentroids = quantizer_->getVectorsFloat32Ref();
 
   // Compute ||y_R||^2 by treating
   // (sub q)(code id)(sub dim) as (sub q * code id)(sub dim)
@@ -456,9 +491,10 @@ IVFPQ::precomputeCodes_() {
   //      (centroid id)(sub q)(dim)
   // Transpose (centroid id)(sub q)(sub dim) to
   //           (sub q)(centroid id)(sub dim)
-  auto centroidView = coarseCentroids.view<3>(
+  auto& coarseCentroids = quantizer_->template getVectorsRef<CentroidT>();
+  auto centroidView = coarseCentroids.template view<3>(
     {coarseCentroids.getSize(0), numSubQuantizers_, dimPerSubQuantizer_});
-  DeviceTensor<float, 3, true> centroidsTransposed(
+  DeviceTensor<CentroidT, 3, true> centroidsTransposed(
     {numSubQuantizers_, coarseCentroids.getSize(0), dimPerSubQuantizer_});
 
   runTransposeAny(centroidView, 0, 1, centroidsTransposed,
@@ -494,6 +530,7 @@ IVFPQ::precomputeCodes_() {
 
   // We added into the view, so `coarsePQProductTransposed` is now our
   // precomputed term 2.
+#ifdef FAISS_USE_FLOAT16
   if (useFloat16LookupTables_) {
     precomputedCodeHalf_ =
       convertTensor<float, half, 3>(resources_,
@@ -502,10 +539,28 @@ IVFPQ::precomputeCodes_() {
   } else {
     precomputedCode_ = std::move(coarsePQProductTransposed);
   }
+#else
+  precomputedCode_ = std::move(coarsePQProductTransposed);
+#endif
+
+}
+
+void
+IVFPQ::precomputeCodes_() {
+#ifdef FAISS_USE_FLOAT16
+  if (quantizer_->getUseFloat16()) {
+    precomputeCodesT_<half>();
+  } else {
+    precomputeCodesT_<float>();
+  }
+#else
+  precomputeCodesT_<float>();
+#endif
 }
 
 void
 IVFPQ::query(Tensor<float, 2, true>& queries,
+             Tensor<uint8_t, 1, true>& bitset,
              int nprobe,
              int k,
              Tensor<float, 2, true>& outDistances,
@@ -528,16 +583,23 @@ IVFPQ::query(Tensor<float, 2, true>& queries,
   DeviceTensor<int, 2, true>
     coarseIndices(mem, {queries.getSize(0), nprobe}, stream);
 
+  DeviceTensor<uint8_t, 1, true> coarseBitset(mem, {0}, stream);
   // Find the `nprobe` closest coarse centroids; we can use int
   // indices both internally and externally
   quantizer_->query(queries,
+                    coarseBitset,
                     nprobe,
+                    metric_,
+                    metricArg_,
                     coarseDistances,
                     coarseIndices,
                     true);
 
   if (precomputedCodes_) {
+    FAISS_ASSERT(metric_ == MetricType::METRIC_L2);
+
     runPQPrecomputedCodes_(queries,
+                           bitset,
                            coarseDistances,
                            coarseIndices,
                            k,
@@ -545,6 +607,7 @@ IVFPQ::query(Tensor<float, 2, true>& queries,
                            outIndices);
   } else {
     runPQNoPrecomputedCodes_(queries,
+                             bitset,
                              coarseDistances,
                              coarseIndices,
                              k,
@@ -587,11 +650,14 @@ IVFPQ::getPQCentroids() {
 void
 IVFPQ::runPQPrecomputedCodes_(
   Tensor<float, 2, true>& queries,
+  Tensor<uint8_t, 1, true>& bitset,
   DeviceTensor<float, 2, true>& coarseDistances,
   DeviceTensor<int, 2, true>& coarseIndices,
   int k,
   Tensor<float, 2, true>& outDistances,
   Tensor<long, 2, true>& outIndices) {
+  FAISS_ASSERT(metric_ == MetricType::METRIC_L2);
+
   auto& mem = resources_->getMemoryManagerCurrentDevice();
   auto stream = resources_->getDefaultStreamCurrentDevice();
 
@@ -632,6 +698,7 @@ IVFPQ::runPQPrecomputedCodes_(
 
   NoTypeTensor<3, true> term2;
   NoTypeTensor<3, true> term3;
+#ifdef FAISS_USE_FLOAT16
   DeviceTensor<half, 3, true> term3Half;
 
   if (useFloat16LookupTables_) {
@@ -640,7 +707,10 @@ IVFPQ::runPQPrecomputedCodes_(
 
     term2 = NoTypeTensor<3, true>(precomputedCodeHalf_);
     term3 = NoTypeTensor<3, true>(term3Half);
-  } else {
+  }
+#endif
+
+  if (!useFloat16LookupTables_) {
     term2 = NoTypeTensor<3, true>(precomputedCode_);
     term3 = NoTypeTensor<3, true>(term3Transposed);
   }
@@ -650,6 +720,7 @@ IVFPQ::runPQPrecomputedCodes_(
                                 term2, // term 2
                                 term3, // term 3
                                 coarseIndices,
+                                bitset,
                                 useFloat16LookupTables_,
                                 bytesPerVector_,
                                 numSubQuantizers_,
@@ -665,21 +736,23 @@ IVFPQ::runPQPrecomputedCodes_(
                                 resources_);
 }
 
+template <typename CentroidT>
 void
-IVFPQ::runPQNoPrecomputedCodes_(
+IVFPQ::runPQNoPrecomputedCodesT_(
   Tensor<float, 2, true>& queries,
+  Tensor<uint8_t, 1, true>& bitset,
   DeviceTensor<float, 2, true>& coarseDistances,
   DeviceTensor<int, 2, true>& coarseIndices,
   int k,
   Tensor<float, 2, true>& outDistances,
   Tensor<long, 2, true>& outIndices) {
-  FAISS_ASSERT(!quantizer_->getUseFloat16());
-  auto& coarseCentroids = quantizer_->getVectorsFloat32Ref();
+  auto& coarseCentroids = quantizer_->template getVectorsRef<CentroidT>();
 
   runPQScanMultiPassNoPrecomputed(queries,
                                   coarseCentroids,
                                   pqCentroidsInnermostCode_,
                                   coarseIndices,
+                                  bitset,
                                   useFloat16LookupTables_,
                                   bytesPerVector_,
                                   numSubQuantizers_,
@@ -690,9 +763,49 @@ IVFPQ::runPQNoPrecomputedCodes_(
                                   deviceListLengths_,
                                   maxListLength_,
                                   k,
+                                  metric_,
                                   outDistances,
                                   outIndices,
                                   resources_);
+}
+
+void
+IVFPQ::runPQNoPrecomputedCodes_(
+  Tensor<float, 2, true>& queries,
+  Tensor<uint8_t, 1, true>& bitset,
+  DeviceTensor<float, 2, true>& coarseDistances,
+  DeviceTensor<int, 2, true>& coarseIndices,
+  int k,
+  Tensor<float, 2, true>& outDistances,
+  Tensor<long, 2, true>& outIndices) {
+#ifdef FAISS_USE_FLOAT16
+  if (quantizer_->getUseFloat16()) {
+    runPQNoPrecomputedCodesT_<half>(queries,
+                                    bitset,
+                                    coarseDistances,
+                                    coarseIndices,
+                                    k,
+                                    outDistances,
+                                    outIndices);
+  } else {
+    runPQNoPrecomputedCodesT_<float>(queries,
+                                     bitset,
+                                     coarseDistances,
+                                     coarseIndices,
+                                     k,
+                                     outDistances,
+                                     outIndices);
+    }
+#else
+    runPQNoPrecomputedCodesT_<float>(queries,
+                                     bitset,
+                                     coarseDistances,
+                                     coarseIndices,
+                                     k,
+                                     outDistances,
+                                     outIndices);
+#endif
+
 }
 
 } } // namespace

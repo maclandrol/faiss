@@ -27,6 +27,7 @@
 #include <faiss/IndexIVFSpectralHash.h>
 #include <faiss/MetaIndexes.h>
 #include <faiss/IndexScalarQuantizer.h>
+#include <faiss/IndexSQHybrid.h>
 #include <faiss/IndexHNSW.h>
 #include <faiss/IndexLattice.h>
 #include <faiss/Index2Layer.h>
@@ -73,10 +74,15 @@ IndexIVF * Cloner::clone_IndexIVF (const IndexIVF *ivf)
     TRYCLONE (IndexIVFPQ, ivf)
     TRYCLONE (IndexIVFFlat, ivf)
     TRYCLONE (IndexIVFScalarQuantizer, ivf)
+    TRYCLONE (IndexIVFSQHybrid, ivf)
     {
       FAISS_THROW_MSG("clone not supported for this type of IndexIVF");
     }
     return nullptr;
+}
+
+Index *Cloner::clone_Index (IndexComposition* index_composition) {
+    FAISS_THROW_MSG( "Not implemented");
 }
 
 Index *Cloner::clone_Index (const Index *index)
@@ -97,6 +103,9 @@ Index *Cloner::clone_Index (const Index *index)
                    (ivf->invlists)) {
             res->invlists = new ArrayInvertedLists(*ails);
             res->own_invlists = true;
+        } else if (auto *ails = dynamic_cast<const ReadOnlyArrayInvertedLists*>(ivf->invlists)) {
+            res->invlists = new ReadOnlyArrayInvertedLists(*ails);
+            res->own_invlists = true;
         } else {
             FAISS_THROW_MSG( "clone not supported for this type of inverted lists");
         }
@@ -107,6 +116,12 @@ Index *Cloner::clone_Index (const Index *index)
                dynamic_cast<const IndexPreTransform*> (index)) {
         IndexPreTransform *res = new IndexPreTransform ();
         res->d = ipt->d;
+        res->ntotal = ipt->ntotal;
+        res->is_trained = ipt->is_trained;
+        res->metric_type = ipt->metric_type;
+        res->metric_arg = ipt->metric_arg;
+
+
         res->index = clone_Index (ipt->index);
         for (int i = 0; i < ipt->chain.size(); i++)
             res->chain.push_back (clone_VectorTransform (ipt->chain[i]));

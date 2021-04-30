@@ -24,6 +24,7 @@ GpuIndexIVFScalarQuantizer::GpuIndexIVFScalarQuantizer(
     GpuIndexIVF(resources,
                 index->d,
                 index->metric_type,
+                index->metric_arg,
                 index->nlist,
                 config),
     ivfSQConfig_(config),
@@ -41,11 +42,11 @@ GpuIndexIVFScalarQuantizer::GpuIndexIVFScalarQuantizer(
   GpuResources* resources,
   int dims,
   int nlist,
-  faiss::ScalarQuantizer::QuantizerType qtype,
+  faiss::QuantizerType qtype,
   faiss::MetricType metric,
   bool encodeResidual,
   GpuIndexIVFScalarQuantizerConfig config) :
-    GpuIndexIVF(resources, dims, metric, nlist, config),
+    GpuIndexIVF(resources, dims, metric, 0, nlist, config),
     ivfSQConfig_(config),
     sq(dims, qtype),
     by_residual(encodeResidual),
@@ -69,6 +70,7 @@ void
 GpuIndexIVFScalarQuantizer::reserveMemory(size_t numVecs) {
   reserveMemoryVecs_ = numVecs;
   if (index_) {
+    DeviceScope scope(device_);
     index_->reserveMemory(numVecs);
   }
 }
@@ -100,6 +102,7 @@ GpuIndexIVFScalarQuantizer::copyFrom(
   index_ = new IVFFlat(resources_,
                        quantizer->getGpuData(),
                        index->metric_type,
+                       index->metric_arg,
                        by_residual,
                        &sq,
                        ivfSQConfig_.indicesOptions,
@@ -107,22 +110,70 @@ GpuIndexIVFScalarQuantizer::copyFrom(
 
   InvertedLists* ivf = index->invlists;
 
-  for (size_t i = 0; i < ivf->nlist; ++i) {
-    auto numVecs = ivf->list_size(i);
+  if(ReadOnlyArrayInvertedLists* rol = dynamic_cast<ReadOnlyArrayInvertedLists*>(ivf)) {
+      index_->copyCodeVectorsFromCpu((const float* )(rol->pin_readonly_codes->data),
+                                     (const long *)(rol->pin_readonly_ids->data), rol->readonly_length);
+  } else {
+      for (size_t i = 0; i < ivf->nlist; ++i) {
+          auto numVecs = ivf->list_size(i);
 
-    // GPU index can only support max int entries per list
-    FAISS_THROW_IF_NOT_FMT(numVecs <=
-                           (size_t) std::numeric_limits<int>::max(),
-                           "GPU inverted list can only support "
-                           "%zu entries; %zu found",
-                           (size_t) std::numeric_limits<int>::max(),
-                           numVecs);
+          // GPU index can only support max int entries per list
+          FAISS_THROW_IF_NOT_FMT(numVecs <=
+                                 (size_t) std::numeric_limits<int>::max(),
+                                 "GPU inverted list can only support "
+                                 "%zu entries; %zu found",
+                                 (size_t) std::numeric_limits<int>::max(),
+                                 numVecs);
 
-    index_->addCodeVectorsFromCpu(
-      i,
-      (const unsigned char*) ivf->get_codes(i),
-      ivf->get_ids(i),
-      numVecs);
+          index_->addCodeVectorsFromCpu(
+                  i,
+                  (const unsigned char*) ivf->get_codes(i),
+                  ivf->get_ids(i),
+                  numVecs);
+      }
+   }
+}
+
+void
+GpuIndexIVFScalarQuantizer::copyFromWithoutCodes(
+  const faiss::IndexIVFScalarQuantizer* index, const uint8_t* arranged_data) {
+  DeviceScope scope(device_);
+
+  // Clear out our old data
+  delete index_;
+  index_ = nullptr;
+
+  // Copy what we need from the CPU index
+  GpuIndexIVF::copyFrom(index);
+  sq = index->sq;
+  by_residual = index->by_residual;
+
+  // The other index might not be trained, in which case we don't need to copy
+  // over the lists
+  if (!index->is_trained) {
+    return;
+  }
+
+  // Otherwise, we can populate ourselves from the other index
+  this->is_trained = true;
+
+  // Copy our lists as well
+  index_ = new IVFFlat(resources_,
+                       quantizer->getGpuData(),
+                       index->metric_type,
+                       index->metric_arg,
+                       by_residual,
+                       &sq,
+                       ivfSQConfig_.indicesOptions,
+                       memorySpace_);
+
+  InvertedLists* ivf = index->invlists;
+
+  if(ReadOnlyArrayInvertedLists* rol = dynamic_cast<ReadOnlyArrayInvertedLists*>(ivf)) {
+      index_->copyCodeVectorsFromCpu((const float *)arranged_data,
+                                     (const long *)(rol->pin_readonly_ids->data), rol->readonly_length);
+  } else {
+      // should not happen
   }
 }
 
@@ -139,7 +190,9 @@ GpuIndexIVFScalarQuantizer::copyTo(
 
   GpuIndexIVF::copyTo(index);
   index->sq = sq;
+  index->code_size = sq.code_size;
   index->by_residual = by_residual;
+  index->code_size = sq.code_size;
 
   InvertedLists* ivf = new ArrayInvertedLists(nlist, index->code_size);
   index->replace_invlists(ivf, true);
@@ -154,6 +207,38 @@ GpuIndexIVFScalarQuantizer::copyTo(
                        listIndices.size(),
                        listIndices.data(),
                        (const uint8_t*) listData.data());
+    }
+  }
+}
+
+void
+GpuIndexIVFScalarQuantizer::copyToWithoutCodes(
+  faiss::IndexIVFScalarQuantizer* index) const {
+  DeviceScope scope(device_);
+
+  // We must have the indices in order to copy to ourselves
+  FAISS_THROW_IF_NOT_MSG(
+    ivfSQConfig_.indicesOptions != INDICES_IVF,
+    "Cannot copy to CPU as GPU index doesn't retain "
+    "indices (INDICES_IVF)");
+
+  GpuIndexIVF::copyTo(index);
+  index->sq = sq;
+  index->code_size = sq.code_size;
+  index->by_residual = by_residual;
+  index->code_size = sq.code_size;
+
+  InvertedLists* ivf = new ArrayInvertedLists(nlist, index->code_size);
+  index->replace_invlists(ivf, true);
+
+  // Copy the inverted lists
+  if (index_) {
+    for (int i = 0; i < nlist; ++i) {
+      auto listIndices = index_->getListIndices(i);
+
+      ivf->add_entries_without_codes(i,
+                                     listIndices.size(),
+                                     listIndices.data());
     }
   }
 }
@@ -214,6 +299,7 @@ GpuIndexIVFScalarQuantizer::train(Index::idx_t n, const float* x) {
   index_ = new IVFFlat(resources_,
                        quantizer->getGpuData(),
                        this->metric_type,
+                       this->metric_arg,
                        by_residual,
                        &sq,
                        ivfSQConfig_.indicesOptions,
@@ -234,6 +320,8 @@ GpuIndexIVFScalarQuantizer::addImpl_(int n,
   FAISS_ASSERT(index_);
   FAISS_ASSERT(n > 0);
 
+  auto stream = resources_->getDefaultStream(device_);
+
   // Data is already resident on the GPU
   Tensor<float, 2, true> data(const_cast<float*>(x), {n, (int) this->d});
 
@@ -253,10 +341,13 @@ GpuIndexIVFScalarQuantizer::searchImpl_(int n,
                                         const float* x,
                                         int k,
                                         float* distances,
-                                        Index::idx_t* labels) const {
+                                        Index::idx_t* labels,
+                                        const BitsetView bitset) const {
   // Device is already set in GpuIndex::search
   FAISS_ASSERT(index_);
   FAISS_ASSERT(n > 0);
+
+  auto stream = resources_->getDefaultStream(device_);
 
   // Data is already resident on the GPU
   Tensor<float, 2, true> queries(const_cast<float*>(x), {n, (int) this->d});
@@ -265,7 +356,15 @@ GpuIndexIVFScalarQuantizer::searchImpl_(int n,
   static_assert(sizeof(long) == sizeof(Index::idx_t), "size mismatch");
   Tensor<long, 2, true> outLabels(const_cast<long*>(labels), {n, k});
 
-  index_->query(queries, nprobe, k, outDistances, outLabels);
+  if (!bitset) {
+    auto bitsetDevice = toDevice<uint8_t, 1>(resources_, device_, nullptr, stream, {0});
+    index_->query(queries, bitsetDevice, nprobe, k, outDistances, outLabels);
+  } else {
+    auto bitsetDevice = toDevice<uint8_t, 1>(resources_, device_,
+                                             const_cast<uint8_t*>(bitset.data()), stream,
+                                             {(int) bitset.u8size()});
+    index_->query(queries, bitsetDevice, nprobe, k, outDistances, outLabels);
+  }
 }
 
 } } // namespace

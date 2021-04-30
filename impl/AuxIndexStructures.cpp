@@ -48,9 +48,12 @@ void RangeSearchResult::do_allocation () {
 }
 
 RangeSearchResult::~RangeSearchResult () {
-    delete [] labels;
-    delete [] distances;
-    delete [] lims;
+    if (labels)
+        delete [] labels;
+    if (distances)
+        delete [] distances;
+    if (lims)
+        delete [] lims;
 }
 
 
@@ -71,8 +74,10 @@ BufferList::BufferList (size_t buffer_size):
 BufferList::~BufferList ()
 {
     for (int i = 0; i < buffers.size(); i++) {
-        delete [] buffers[i].ids;
-        delete [] buffers[i].dis;
+        if (buffers[i].ids)
+            delete [] buffers[i].ids;
+        if (buffers[i].dis)
+            delete [] buffers[i].dis;
     }
 }
 
@@ -226,6 +231,23 @@ IDSelectorRange::IDSelectorRange (idx_t imin, idx_t imax):
 bool IDSelectorRange::is_member (idx_t id) const
 {
     return id >= imin && id < imax;
+}
+
+/***********************************************************************
+ * IDSelectorArray
+ ***********************************************************************/
+
+IDSelectorArray::IDSelectorArray (size_t n, const idx_t *ids):
+   n (n), ids(ids)
+{
+}
+
+bool IDSelectorArray::is_member (idx_t id) const
+{
+    for (idx_t i = 0; i < n; i++) {
+        if (ids[i] == id) return true;
+    }
+    return false;
 }
 
 

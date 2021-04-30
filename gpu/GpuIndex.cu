@@ -9,7 +9,6 @@
 #include <faiss/gpu/GpuIndex.h>
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/gpu/GpuResources.h>
-#include <faiss/gpu/impl/Metrics.cuh>
 #include <faiss/gpu/utils/CopyUtils.cuh>
 #include <faiss/gpu/utils/DeviceUtils.h>
 #include <faiss/gpu/utils/StaticUtils.h>
@@ -39,6 +38,7 @@ constexpr size_t kSearchVecSize = (size_t) 32 * 1024;
 GpuIndex::GpuIndex(GpuResources* resources,
                    int dims,
                    faiss::MetricType metric,
+                   float metricArg,
                    GpuIndexConfig config) :
     Index(dims, metric),
     resources_(resources),
@@ -62,11 +62,28 @@ GpuIndex::GpuIndex(GpuResources* resources,
                      "Must compile with CUDA 8+ for Unified Memory support");
 #endif
 
-  FAISS_THROW_IF_NOT_MSG(isMetricSupported(metric),
-                         "Unsupported metric type on GPU");
+  metric_arg = metricArg;
 
   FAISS_ASSERT(resources_);
   resources_->initializeForDevice(device_);
+}
+
+void
+GpuIndex::copyFrom(const faiss::Index* index) {
+  d = index->d;
+  metric_type = index->metric_type;
+  metric_arg = index->metric_arg;
+  ntotal = index->ntotal;
+  is_trained = index->is_trained;
+}
+
+void
+GpuIndex::copyTo(faiss::Index* index) const {
+  index->d = d;
+  index->metric_type = metric_type;
+  index->metric_arg = metric_arg;
+  index->ntotal = ntotal;
+  index->is_trained = is_trained;
 }
 
 void
@@ -181,7 +198,8 @@ GpuIndex::search(Index::idx_t n,
                  const float* x,
                  Index::idx_t k,
                  float* distances,
-                 Index::idx_t* labels) const {
+                 Index::idx_t* labels,
+                 const BitsetView bitset) const {
   FAISS_THROW_IF_NOT_MSG(this->is_trained, "Index not trained");
 
   // For now, only support <= max int results
@@ -234,7 +252,8 @@ GpuIndex::search(Index::idx_t n,
     if (dataSize >= minPagedSize_) {
       searchFromCpuPaged_(n, x, k,
                           outDistances.data(),
-                          outLabels.data());
+                          outLabels.data(),
+                          bitset);
       usePaged = true;
     }
   }
@@ -242,7 +261,8 @@ GpuIndex::search(Index::idx_t n,
   if (!usePaged) {
     searchNonPaged_(n, x, k,
                     outDistances.data(),
-                    outLabels.data());
+                    outLabels.data(),
+                    bitset);
   }
 
   // Copy back if necessary
@@ -255,7 +275,8 @@ GpuIndex::searchNonPaged_(int n,
                           const float* x,
                           int k,
                           float* outDistancesData,
-                          Index::idx_t* outIndicesData) const {
+                          Index::idx_t* outIndicesData,
+                          const BitsetView bitset) const {
   auto stream = resources_->getDefaultStream(device_);
 
   // Make sure arguments are on the device we desire; use temporary
@@ -266,7 +287,7 @@ GpuIndex::searchNonPaged_(int n,
                                  stream,
                                  {n, (int) this->d});
 
-  searchImpl_(n, vecs.data(), k, outDistancesData, outIndicesData);
+  searchImpl_(n, vecs.data(), k, outDistancesData, outIndicesData, bitset);
 }
 
 void
@@ -274,7 +295,8 @@ GpuIndex::searchFromCpuPaged_(int n,
                               const float* x,
                               int k,
                               float* outDistancesData,
-                              Index::idx_t* outIndicesData) const {
+                              Index::idx_t* outIndicesData,
+                              const BitsetView bitset) const {
   Tensor<float, 2, true> outDistances(outDistancesData, {n, k});
   Tensor<Index::idx_t, 2, true> outIndices(outIndicesData, {n, k});
 
@@ -299,7 +321,8 @@ GpuIndex::searchFromCpuPaged_(int n,
                       x + (size_t) cur * this->d,
                       k,
                       outDistancesSlice.data(),
-                      outIndicesSlice.data());
+                      outIndicesSlice.data(),
+                      bitset);
     }
 
     return;
@@ -410,7 +433,8 @@ GpuIndex::searchFromCpuPaged_(int n,
                   bufGpus[cur3BufIndex]->data(),
                   k,
                   outDistancesSlice.data(),
-                  outIndicesSlice.data());
+                  outIndicesSlice.data(),
+                  bitset);
 
       // Create completion event
       eventGpuExecuteDone[cur3BufIndex] =

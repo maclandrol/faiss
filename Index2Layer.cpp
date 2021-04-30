@@ -27,7 +27,7 @@
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/IndexFlat.h>
 #include <faiss/utils/distances.h>
-
+#include <faiss/FaissHook.h>
 
 /*
 #include <faiss/utils/Heap.h>
@@ -42,7 +42,6 @@
 
 namespace faiss {
 
-using idx_t = Index::idx_t;
 
 /*************************************
  * Index2Layer implementation
@@ -166,7 +165,8 @@ void Index2Layer::search(
     const float* /*x*/,
     idx_t /*k*/,
     float* /*distances*/,
-    idx_t* /*labels*/) const {
+    idx_t* /*labels*/,
+    const BitsetView) const {
   FAISS_THROW_MSG("not implemented");
 }
 

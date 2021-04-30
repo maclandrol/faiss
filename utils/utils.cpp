@@ -214,102 +214,6 @@ void matrix_qr (int m, int n, float *a)
 }
 
 
-/***************************************************************************
- * Kmeans subroutine
- ***************************************************************************/
-
-// a bit above machine epsilon for float16
-
-#define EPS (1 / 1024.)
-
-/* For k-means, compute centroids given assignment of vectors to centroids */
-int km_update_centroids (const float * x,
-                         float * centroids,
-                         int64_t * assign,
-                         size_t d, size_t k, size_t n,
-                         size_t k_frozen)
-{
-    k -= k_frozen;
-    centroids += k_frozen * d;
-
-    std::vector<size_t> hassign(k);
-    memset (centroids, 0, sizeof(*centroids) * d * k);
-
-#pragma omp parallel
-    {
-        int nt = omp_get_num_threads();
-        int rank = omp_get_thread_num();
-        // this thread is taking care of centroids c0:c1
-        size_t c0 = (k * rank) / nt;
-        size_t c1 = (k * (rank + 1)) / nt;
-        const float *xi = x;
-        size_t nacc = 0;
-
-        for (size_t i = 0; i < n; i++) {
-            int64_t ci = assign[i];
-            assert (ci >= 0 && ci < k + k_frozen);
-            ci -= k_frozen;
-            if (ci >= c0 && ci < c1)  {
-                float * c = centroids + ci * d;
-                hassign[ci]++;
-                for (size_t j = 0; j < d; j++)
-                    c[j] += xi[j];
-                nacc++;
-            }
-            xi += d;
-        }
-
-    }
-
-#pragma omp parallel for
-    for (size_t ci = 0; ci < k; ci++) {
-        float * c = centroids + ci * d;
-        float ni = (float) hassign[ci];
-        if (ni != 0) {
-            for (size_t j = 0; j < d; j++)
-                c[j] /= ni;
-        }
-    }
-
-    /* Take care of void clusters */
-    size_t nsplit = 0;
-    RandomGenerator rng (1234);
-    for (size_t ci = 0; ci < k; ci++) {
-        if (hassign[ci] == 0) { /* need to redefine a centroid */
-            size_t cj;
-            for (cj = 0; 1; cj = (cj + 1) % k) {
-                /* probability to pick this cluster for split */
-                float p = (hassign[cj] - 1.0) / (float) (n - k);
-                float r = rng.rand_float ();
-                if (r < p) {
-                    break; /* found our cluster to be split */
-                }
-            }
-            memcpy (centroids+ci*d, centroids+cj*d, sizeof(*centroids) * d);
-
-            /* small symmetric pertubation. Much better than  */
-            for (size_t j = 0; j < d; j++) {
-                if (j % 2 == 0) {
-                    centroids[ci * d + j] *= 1 + EPS;
-                    centroids[cj * d + j] *= 1 - EPS;
-                } else {
-                    centroids[ci * d + j] *= 1 - EPS;
-                    centroids[cj * d + j] *= 1 + EPS;
-                }
-            }
-
-            /* assume even split of the cluster */
-            hassign[ci] = hassign[cj] / 2;
-            hassign[cj] -= hassign[ci];
-            nsplit++;
-        }
-    }
-
-    return nsplit;
-}
-
-#undef EPS
-
 
 
 /***************************************************************************
@@ -779,5 +683,41 @@ bool check_openmp() {
 
     return true;
 }
+
+int64_t get_L3_Size() {
+    static int64_t l3_size = -1;
+    constexpr int64_t KB = 1024;
+    if (l3_size == -1) {
+
+        FILE* file = fopen("/sys/devices/system/cpu/cpu0/cache/index3/size","r");
+        int64_t result = 0;
+        constexpr int64_t line_length = 128;
+        char line[line_length];
+        if (file){
+            char* ret = fgets(line, sizeof(line) - 1, file);
+
+            sscanf(line, "%luK", &result);
+            l3_size = result * KB;
+
+            fclose(file);
+        } else {
+            l3_size = 12 * KB * KB; // 12M
+        }
+
+    }
+    return l3_size;
+}
+
+void (*LOG_TRACE_)(const std::string&);
+
+void (*LOG_DEBUG_)(const std::string&);
+
+void (*LOG_INFO_)(const std::string&);
+
+void (*LOG_WARNING_)(const std::string&);
+
+void (*LOG_FATAL_)(const std::string&);
+
+void (*LOG_ERROR_)(const std::string&);
 
 } // namespace faiss

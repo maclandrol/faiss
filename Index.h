@@ -10,7 +10,9 @@
 #ifndef FAISS_INDEX_H
 #define FAISS_INDEX_H
 
-
+#include <faiss/MetricType.h>
+#include <faiss/utils/ConcurrentBitset.h>
+#include <faiss/utils/BitsetView.h>
 #include <cstdio>
 #include <typeinfo>
 #include <string>
@@ -18,7 +20,7 @@
 
 #define FAISS_VERSION_MAJOR 1
 #define FAISS_VERSION_MINOR 6
-#define FAISS_VERSION_PATCH 0
+#define FAISS_VERSION_PATCH 3
 
 /**
  * @namespace faiss
@@ -39,34 +41,15 @@
 
 namespace faiss {
 
-
-/// Some algorithms support both an inner product version and a L2 search version.
-enum MetricType {
-    METRIC_INNER_PRODUCT = 0,  ///< maximum inner product search
-    METRIC_L2 = 1,             ///< squared L2 search
-    METRIC_L1,                 ///< L1 (aka cityblock)
-    METRIC_Linf,               ///< infinity distance
-    METRIC_Lp,                 ///< L_p distance, p is given by metric_arg
-
-    /// some additional metrics defined in scipy.spatial.distance
-    METRIC_Canberra = 20,
-    METRIC_BrayCurtis,
-    METRIC_JensenShannon,
-
-};
-
-
 /// Forward declarations see AuxIndexStructures.h
 struct IDSelector;
 struct RangeSearchResult;
 struct DistanceComputer;
 
-/** Abstract structure for an index
+/** Abstract structure for an index, supports adding vectors and searching them.
  *
- * Supports adding vertices and searching them.
- *
- * Currently only asymmetric queries are supported:
- * database-to-database queries are not implemented.
+ * All vectors provided at add or search time are 32-bit float arrays,
+ * although the internal representation may vary.
  */
 struct Index {
     using idx_t = int64_t;  ///< all indices are this type
@@ -112,6 +95,13 @@ struct Index {
      */
     virtual void add (idx_t n, const float *x) = 0;
 
+    /** Same as add, but only add ids, not codes
+     * 
+     * @param n      nb of training vectors
+     * @param x      training vecors, size n * d
+     */
+    virtual void add_without_codes(idx_t n, const float* x);
+
     /** Same as add, but stores xids instead of sequential ids.
      *
      * The default implementation fails with an assertion, as it is
@@ -121,6 +111,12 @@ struct Index {
      */
     virtual void add_with_ids (idx_t n, const float * x, const idx_t *xids);
 
+    /** Same as add_with_ids, but only add ids, not codes
+     * 
+     * @param xids if non-null, ids to store for the vectors (size n)
+     */
+    virtual void add_with_ids_without_codes(idx_t n, const float* x, const idx_t* xids);
+
     /** query n vectors of dimension d to the index.
      *
      * return at most k vectors. If there are not enough results for a
@@ -129,9 +125,37 @@ struct Index {
      * @param x           input vectors to search, size n * d
      * @param labels      output labels of the NNs, size n*k
      * @param distances   output pairwise distances, size n*k
+     * @param bitset      flags to check the validity of vectors
      */
     virtual void search (idx_t n, const float *x, idx_t k,
-                         float *distances, idx_t *labels) const = 0;
+                         float *distances, idx_t *labels,
+                         const BitsetView bitset = nullptr) const = 0;
+
+#if 0
+    /** query n raw vectors from the index by ids.
+     *
+     * return n raw vectors.
+     *
+     * @param n           input num of xid
+     * @param xid         input labels of the NNs, size n
+     * @param x           output raw vectors, size n * d
+     * @param bitset      flags to check the validity of vectors
+     */
+    virtual void get_vector_by_id (idx_t n, const idx_t *xid, float *x, const BitsetView bitset = nullptr);
+
+    /** query n vectors of dimension d to the index by ids.
+     *
+     * return at most k vectors. If there are not enough results for a
+     * query, the result array is padded with -1s.
+     *
+     * @param xid         input ids to search, size n
+     * @param labels      output labels of the NNs, size n*k
+     * @param distances   output pairwise distances, size n*k
+     * @param bitset      flags to check the validity of vectors
+     */
+     virtual void search_by_id (idx_t n, const idx_t *xid, idx_t k, float *distances, idx_t *labels,
+                                const BitsetView bitset = nullptr);
+#endif
 
     /** query n vectors of dimension d to the index.
      *
@@ -144,15 +168,16 @@ struct Index {
      * @param result      result table
      */
     virtual void range_search (idx_t n, const float *x, float radius,
-                               RangeSearchResult *result) const;
+                               RangeSearchResult *result,
+                               const BitsetView bitset = nullptr) const;
 
     /** return the indexes of the k vectors closest to the query x.
      *
      * This function is identical as search but only return labels of neighbors.
      * @param x           input vectors to search, size n * d
-     * @param labels      output labels of the NNs, size n*k
+     * @param labels      output labels of the NNs, size n
      */
-    void assign (idx_t n, const float * x, idx_t * labels, idx_t k = 1);
+    virtual void assign (idx_t n, const float* x, idx_t* labels, float* distance = nullptr);
 
     /// removes all elements from the database.
     virtual void reset() = 0;

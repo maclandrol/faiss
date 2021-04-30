@@ -17,6 +17,7 @@
 #include <faiss/IndexIVF.h>
 #include <faiss/Clustering.h>
 #include <faiss/utils/Heap.h>
+#include <faiss/common.h>
 
 
 namespace faiss {
@@ -46,8 +47,7 @@ struct IndexBinaryIVF : IndexBinary {
     bool use_heap = true;
 
     /// map for direct access to the elements. Enables reconstruct().
-    bool maintain_direct_map;
-    std::vector<idx_t> direct_map;
+    DirectMap direct_map;
 
     IndexBinary *quantizer;   ///< quantizer that maps vectors to inverted lists
     size_t nlist;             ///< number of possible key values
@@ -56,6 +56,8 @@ struct IndexBinaryIVF : IndexBinary {
 
     ClusteringParameters cp; ///< to override default clustering params
     Index *clustering_index; ///< to override index used during clustering
+    mutable std::vector<size_t> nprobe_statistics;
+    mutable IndexIVFStats index_ivf_stats;
 
     /** The Inverted file takes a quantizer (an IndexBinary) on input,
      * which implements the function mapping a vector to a list
@@ -63,6 +65,8 @@ struct IndexBinaryIVF : IndexBinary {
      * be deleted while the IndexBinaryIVF is in use.
      */
     IndexBinaryIVF(IndexBinary *quantizer, size_t d, size_t nlist);
+
+    IndexBinaryIVF(IndexBinary *quantizer, size_t d, size_t nlist, MetricType metric);
 
     IndexBinaryIVF();
 
@@ -103,15 +107,29 @@ struct IndexBinaryIVF : IndexBinary {
                             const int32_t *centroid_dis,
                             int32_t *distances, idx_t *labels,
                             bool store_pairs,
-                            const IVFSearchParameters *params=nullptr
+                            const IVFSearchParameters *params=nullptr,
+                            const BitsetView bitset = nullptr
                             ) const;
 
     virtual BinaryInvertedListScanner *get_InvertedListScanner (
                                          bool store_pairs=false) const;
 
     /** assign the vectors, then call search_preassign */
-    virtual void search(idx_t n, const uint8_t *x, idx_t k,
-                        int32_t *distances, idx_t *labels) const override;
+    void search(idx_t n, const uint8_t *x, idx_t k,
+                int32_t *distances, idx_t *labels, const BitsetView bitset = nullptr) const override;
+
+
+#if 0
+    /** get raw vectors by ids */
+    void get_vector_by_id(idx_t n, const idx_t *xid, uint8_t *x, const BitsetView bitset = nullptr) override;
+
+    void search_by_id (idx_t n, const idx_t *xid, idx_t k, int32_t *distances, idx_t *labels,
+                       const BitsetView bitset = nullptr) override;
+#endif
+
+    void range_search(idx_t n, const uint8_t *x, int radius,
+                      RangeSearchResult *result,
+                      const BitsetView bitset = nullptr) const override;
 
     void reconstruct(idx_t key, uint8_t *recons) const override;
 
@@ -161,12 +179,24 @@ struct IndexBinaryIVF : IndexBinary {
     size_t get_list_size(size_t list_no) const
     { return invlists->list_size(list_no); }
 
+    /// clear nprobe statistics:
+    void clear_nprobe_statistics() {
+        nprobe_statistics.clear();
+    }
+
+//    virtual std::unique_lock<std::mutex>
+//    Lock() const {
+//        return std::unique_lock<std::mutex>(nprobe_stat_lock);
+//    }
+
     /** intialize a direct map
      *
      * @param new_maintain_direct_map    if true, create a direct map,
      *                                   else clear it
      */
     void make_direct_map(bool new_maintain_direct_map=true);
+
+    void set_direct_map_type (DirectMap::Type type);
 
     void replace_invlists(InvertedLists *il, bool own=false);
 };
@@ -199,7 +229,14 @@ struct BinaryInvertedListScanner {
                                const uint8_t *codes,
                                const idx_t *ids,
                                int32_t *distances, idx_t *labels,
-                               size_t k) const = 0;
+                               size_t k,
+                               const BitsetView bitset = nullptr) const = 0;
+
+    virtual void scan_codes_range (size_t n,
+                                   const uint8_t *codes,
+                                   const idx_t *ids,
+                                   int radius,
+                                   RangeQueryResult &result) const = 0;
 
     virtual ~BinaryInvertedListScanner () {}
 

@@ -20,6 +20,7 @@ class IVFFlat : public IVFBase {
           /// We do not own this reference
           FlatIndex* quantizer,
           faiss::MetricType metric,
+          float metricArg,
           bool useResidual,
           /// Optional ScalarQuantizer
           faiss::ScalarQuantizer* scalarQ,
@@ -35,6 +36,10 @@ class IVFFlat : public IVFBase {
                              const long* indices,
                              size_t numVecs);
 
+  void copyCodeVectorsFromCpu(const float* vecs,
+                              const long* indices,
+                              const std::vector<size_t>& list_length);
+
   /// Adds the given vectors to this index.
   /// The input data must be on our current device.
   /// Returns the number of vectors successfully added. Vectors may
@@ -45,6 +50,7 @@ class IVFFlat : public IVFBase {
   /// Find the approximate k nearest neigbors for `queries` against
   /// our database
   void query(Tensor<float, 2, true>& queries,
+             Tensor<uint8_t, 1, true>& bitset,
              int nprobe,
              int k,
              Tensor<float, 2, true>& outDistances,
@@ -55,9 +61,6 @@ class IVFFlat : public IVFBase {
   size_t getVectorMemorySize() const;
 
  private:
-  /// Metric type used
-  faiss::MetricType metric_;
-
   /// Do we encode the residual from a coarse quantizer or not?
   bool useResidual_;
 

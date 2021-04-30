@@ -60,7 +60,8 @@ struct Index2Layer: Index {
         const float* x,
         idx_t k,
         float* distances,
-        idx_t* labels) const override;
+        idx_t* labels,
+        const BitsetView bitset = nullptr) const override;
 
     void reconstruct_n(idx_t i0, idx_t ni, float* recons) const override;
 
@@ -79,6 +80,7 @@ struct Index2Layer: Index {
     void sa_encode (idx_t n, const float *x, uint8_t *bytes) const override;
     void sa_decode (idx_t n, const uint8_t *bytes, float *x) const override;
 
+    size_t cal_size() { return sizeof(*this) + codes.size() * sizeof(uint8_t) + pq.cal_size(); }
 };
 
 

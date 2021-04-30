@@ -7,6 +7,10 @@
 
 ifneq ($(strip $(NVCC)),)
 	SWIGFLAGS += -DGPU_WRAPPER
+
+else
+	SWIGFLAGS += -DUSE_CPU
+
 endif
 
 all: build
