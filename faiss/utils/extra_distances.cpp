@@ -152,6 +152,8 @@ void pairwise_extra_distances(
         HANDLE_VAR(Canberra);
         HANDLE_VAR(BrayCurtis);
         HANDLE_VAR(JensenShannon);
+        HANDLE_VAR(Jaccard);
+        HANDLE_VAR(Tanimoto);
         HANDLE_VAR(Lp);
 #undef HANDLE_VAR
         default:
@@ -181,6 +183,8 @@ void knn_extra_metrics(
         HANDLE_VAR(Canberra);
         HANDLE_VAR(BrayCurtis);
         HANDLE_VAR(JensenShannon);
+        HANDLE_VAR(Jaccard);
+        HANDLE_VAR(Tanimoto);
         HANDLE_VAR(Lp);
 #undef HANDLE_VAR
         default:
@@ -207,6 +211,8 @@ DistanceComputer* get_extra_distance_computer(
         HANDLE_VAR(Canberra);
         HANDLE_VAR(BrayCurtis);
         HANDLE_VAR(JensenShannon);
+        HANDLE_VAR(Jaccard);
+        HANDLE_VAR(Tanimoto);
         HANDLE_VAR(Lp);
 #undef HANDLE_VAR
         default:

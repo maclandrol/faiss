@@ -33,10 +33,30 @@ class TestExtraDistances(unittest.TestCase):
         new_dis = faiss.pairwise_distances(xq, yb, metric_type)
         self.assertTrue(np.allclose(ref_dis, new_dis))
 
+
+    def run_simple_dis_test_byte(self, ref_func, metric_type):
+        rs = np.random.RandomState(123)
+        xq = rs.randint(0, 2, (5, 32)).astype("float32")
+        yb = rs.randint(0, 2, (5, 32)).astype("float32")
+        ref_dis = np.array([
+            [ref_func(x, y) for y in yb]
+            for x in xq
+        ])
+        new_dis = faiss.pairwise_distances(xq, yb, metric_type)
+        self.assertTrue(np.allclose(ref_dis, new_dis))
+
+
     def test_L1(self):
         self.run_simple_dis_test(scipy.spatial.distance.cityblock,
                                  faiss.METRIC_L1)
 
+    def test_Jaccard(self):
+        self.run_simple_dis_test_byte(scipy.spatial.distance.jaccard,
+                                 faiss.METRIC_Jaccard)
+
+    def test_Tanimoto(self):
+        self.run_simple_dis_test_byte(scipy.spatial.distance.tanimoto,
+                                 faiss.METRIC_Tanimoto)
     def test_Linf(self):
         self.run_simple_dis_test(scipy.spatial.distance.chebyshev,
                                  faiss.METRIC_Linf)

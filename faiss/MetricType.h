@@ -24,11 +24,13 @@ enum MetricType {
     METRIC_Linf,              ///< infinity distance
     METRIC_Lp,                ///< L_p distance, p is given by a faiss::Index
                               /// metric_arg
-
     /// some additional metrics defined in scipy.spatial.distance
     METRIC_Canberra = 20,
     METRIC_BrayCurtis,
     METRIC_JensenShannon,
+    /// float based jaccard and tanimoto computation
+    METRIC_Jaccard,
+    METRIC_Tanimoto,
 };
 
 } // namespace faiss

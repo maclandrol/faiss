@@ -9,6 +9,10 @@
  *  and inner product */
 
 #include <faiss/utils/distances.h>
+
+#include <cmath>
+#include <omp.h>
+
 #include <type_traits>
 
 namespace faiss {
@@ -113,5 +117,39 @@ inline float VectorDistance<METRIC_JensenShannon>::operator()(
     }
     return 0.5 * accu;
 }
+
+template <>
+inline float VectorDistance<METRIC_Jaccard>::operator()(
+        const float *x, 
+        const float *y) const {
+    float accu_num = 0, accu_den = 0;
+    const float EPSILON = 0.000001;
+    for (size_t i = 0; i < d; i++) {
+        float xi = x[i], yi = y[i];
+        if (fabs (xi - yi) < EPSILON) {
+            accu_num += xi;
+            accu_den += xi;
+        } else {
+            accu_den += xi;
+            accu_den += yi;
+        }
+    }
+    return 1 - accu_num / accu_den;
+}
+
+
+template <>
+inline float VectorDistance<METRIC_Tanimoto>::operator()(
+        const float *x, 
+        const float *y) const {
+    float accu_num = 0, accu_den = 0;
+    for (size_t i = 0; i < d; i++) {
+        float xi = x[i], yi = y[i];
+        accu_num += xi * yi;
+        accu_den += xi * xi + yi * yi - xi * yi;
+    }
+    return  -log2(accu_num / accu_den) ;
+}
+
 
 } // namespace faiss
